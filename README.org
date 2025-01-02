@@ -1,0 +1,3 @@
+Rewrite of [[https://github.com/Ju-Fi/ray-says/][ray-says]] markov-chain sentence generator in C with efficiency, algorithim, and reusability improvements.
+
+So far, only generates binary serialization of weights.
