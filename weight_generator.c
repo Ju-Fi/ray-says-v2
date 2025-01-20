@@ -73,7 +73,7 @@ sb_append(String_Builder *sb, char c)
 }
 
 bool
-sv_is_equal(String_View const *a, String_View const *b)
+sv_equals(String_View const *a, String_View const *b)
 {
     if (!a || !b || a->count != b->count) {
         return false;
@@ -89,7 +89,7 @@ sv_is_equal(String_View const *a, String_View const *b)
 }
 
 String_View
-sb_to_sv(String_Builder const *sb)
+sv_from_sb(String_Builder const *sb)
 {
     String_View result = {0};
 
@@ -139,7 +139,7 @@ markov_table_get(Markov_Table *tbl, String_View const *key)
     for (i = index;
          (looping_around ? i < index : i <= tbl->count)
              && (i < tbl->count && (!tbl->data[i].token.data
-                 || !sv_is_equal(&tbl->data[i].token, key)));
+                 || !sv_equals(&tbl->data[i].token, key)));
          i++) {
         if (i == tbl->count) {
             looping_around = true;
@@ -181,16 +181,16 @@ markov_table_insert(Markov_Table *tbl, String_View const *token, String_View con
                 next_token_weight.occurrences = 1;
                 dappend(&tbl->data[i].subsequents, next_token_weight);
             }
-// when we get 'box is', it returns NULL
+
             break;
-        } else if (sv_is_equal(token, &tbl->data[i].token)) {
+        } else if (sv_equals(token, &tbl->data[i].token)) {
             // Update entry with new subsequent/increment subsequent
             Markov_Table_Entry *entry = tbl->data + i;
             bool subsequent_exists = false;
             size_t j;
 
             for (j = 0; j < entry->subsequents.count && !subsequent_exists; j++) {
-                subsequent_exists = sv_is_equal(
+                subsequent_exists = sv_equals(
                     &entry->subsequents.data[j].entry->token,
                     next_token
                 );
@@ -251,7 +251,7 @@ markov_table_create(FILE *stream)
         }
 
         if (prev_token.cap) {
-            String_View p = sb_to_sv(&prev_token), c = sb_to_sv(&cur_token);
+            String_View p = sv_from_sb(&prev_token), c = sv_from_sb(&cur_token);
             markov_table_insert(&tbl, &p, &c);
         }
 
@@ -262,8 +262,8 @@ markov_table_create(FILE *stream)
     return tbl;
 }
 
-void
-markov_table_serialize(Markov_Table *tbl, FILE *output)
+Byte_Buffer
+markov_table_serialize(Markov_Table const *tbl, FILE *output)
 {
     Byte_Buffer buf = {0};
 
@@ -276,6 +276,9 @@ markov_table_serialize(Markov_Table *tbl, FILE *output)
         da_conc(&buf, &token.count, sizeof(token.count));
         if (token.data) {
             da_conc(&buf, token.data, token.count + 1); // +1 for NUL
+        } else {
+            /* char nul = '\0'; */
+            /* da_conc(&buf, &nul, 1); */
         }
 
         /* Write Markov_Table_Entry subsequents */
@@ -290,30 +293,102 @@ markov_table_serialize(Markov_Table *tbl, FILE *output)
     }
 
     fwrite(buf.data, sizeof(*buf.data), buf.count, output);
+    return buf;
+}
+
+ssize_t
+bb_read(Byte_Buffer *bytes, void *buf, size_t n)
+{
+    ssize_t result;
+
+    if (!bytes || !bytes->data || !buf) {
+        result = -1;
+    } else {
+        if (bytes->count < n) {
+            n = bytes->count;
+        }
+        memcpy(buf, bytes->data, n);
+        bytes->data += n;
+        bytes->count -= n;
+        result = n;
+    }
+
+    return result;
+}
+#define BB_READ_INTO(buf, dest) bb_read((buf), &(dest), sizeof((dest)))
+
+Markov_Table
+markov_table_deserialize(Byte_Buffer bytes)
+{
+    Markov_Table result = {0};
+
+    assert(bytes.count >= sizeof(result.count));
+
+    assert(BB_READ_INTO(&bytes, result.count) == sizeof(result.count));
+    result.data = malloc(result.count * sizeof(*result.data));
+    assert(result.data);
+
+    for (size_t i = 0; i < result.count; i++) {
+        String_View token = {0};
+        Token_Weights subs = {0};
+        char *s = NULL;
+
+        BB_READ_INTO(&bytes, token.count);
+        s = token.count ? malloc(token.count + 1) : NULL;
+        bb_read(&bytes, s, token.count + 1);
+        token.data = s;
+        result.data[i].token = token;
+
+        BB_READ_INTO(&bytes, subs.count);
+        subs.data = subs.count ? malloc(subs.count * sizeof(*subs.data)) : NULL;
+        for (size_t j = 0; j < subs.count; j++) {
+            Token_Weight tw = {0};
+            uintptr_t entry_idx;
+
+            BB_READ_INTO(&bytes, entry_idx);
+            BB_READ_INTO(&bytes, tw.occurrences);
+            tw.entry = result.data + entry_idx;
+
+            subs.data[j] = tw;
+        }
+
+        result.data[i].subsequents = subs;
+    }
+
+    return result;
+}
+
+static void
+print_table(Markov_Table *tbl)
+{
+    for (size_t i = 0; i < tbl->count; i++) {
+        printf("%lu: {token = \"%s\", [", i, tbl->data[i].token.data);
+        for (size_t j = 0; j < tbl->data[i].subsequents.count; j++) {
+            Token_Weight *tw = &tbl->data[i].subsequents.data[j];
+            printf("{entry = \"%s\", n = %llu}, ", tw->entry->token.data, tw->occurrences);
+        }
+        printf("]}\n");
+    }
+
 }
 
 int
 main(void)
 {
-    FILE *input = fopen("test.txt", "r");
+    FILE *input = fopen("trunc_ray_sentences.txt", "r");
     FILE *output = fopen("weights_bin", "w");
+    Byte_Buffer buf;
 
     assert(input && output && "TODO error handling");
 
     Markov_Table t = markov_table_create(input);
 #if 0
-    for (size_t i = 0; i < t.count; i++) {
-        printf("%lu: {token = \"%s\", [", i, t.data[i].token.data);
-        for (size_t j = 0; j < t.data[i].subsequents.count; j++) {
-            Token_Weight *tw = &t.data[i].subsequents.data[j];
-            printf("{entry = \"%s\", n = %llu}, ", tw->entry->token.data, tw->occurrences);
-        }
-        printf("]}\n");
-    }
+    print_table(&t);
 #else
-    markov_table_serialize(&t, output);
+    buf = markov_table_serialize(&t, output);
+    Markov_Table deserialized = markov_table_deserialize(buf);
+    print_table(&deserialized);
 #endif
-
     fclose(input);
     fclose(output);
     return 0;

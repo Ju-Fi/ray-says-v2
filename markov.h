@@ -46,11 +46,13 @@ void _dappend(void **out_data, size_t *out_count, size_t *out_cap, size_t elemen
 void _da_conc(void **out_data, size_t *out_count, size_t *out_cap, size_t element_size, void const *add_data, size_t add_data_count);
 #define da_conc(da, xs, n) _da_conc((void**)&(da)->data, &(da)->count, &(da)->cap, sizeof(*((da)->data)), (xs), (n))
 void sb_append(String_Builder *sb, char c);
-bool sv_is_equal(String_View const *a, String_View const *b);
-String_View sb_to_sv(String_Builder const *sb);
+bool sv_equals(String_View const *a, String_View const *b);
+String_View sv_from_sb(String_Builder const *sb);
 
 Markov_Table_Entry *markov_table_insert(Markov_Table *tbl, String_View const *token, String_View const *next_token);
 Markov_Table_Entry *markov_table_get(Markov_Table *tbl, String_View const *key);
 Markov_Table markov_table_create(FILE *stream);
+Byte_Buffer markov_table_serialize(Markov_Table const *tbl, FILE *output);
+
 
 #endif // MARKOV_H_
